@@ -205,7 +205,7 @@ class DroidNet(nn.Module):
 
             net, delta, weight, eta, upmask = \
                 self.update(net, inp, corr, motion, ii, jj)
-
+            # TODO mask here
             target = coords1 + delta
 
             for i in range(2):

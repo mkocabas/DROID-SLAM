@@ -1,3 +1,4 @@
+import copy
 import sys
 sys.path.append('droid_slam')
 
@@ -13,6 +14,7 @@ import argparse
 
 from torch.multiprocessing import Process
 from droid import Droid
+from droid_slam.pcl import save_pcl
 
 import torch.nn.functional as F
 
@@ -21,6 +23,7 @@ def show_image(image):
     image = image.permute(1, 2, 0).cpu().numpy()
     cv2.imshow('image', image / 255.0)
     cv2.waitKey(1)
+
 
 def image_stream(imagedir, calib, stride):
     """ image generator """
@@ -56,26 +59,48 @@ def image_stream(imagedir, calib, stride):
         yield t, image[None], intrinsics
 
 
-def save_reconstruction(droid, reconstruction_path):
+def save_reconstruction(droid, reconstruction_path, traj_est=None):
 
     from pathlib import Path
     import random
     import string
 
+    
+    # pcl, clr = get_pcl(droid.video)
+    if traj_est is not None:
+        print("Debug")
+        print('poses:', droid.video.poses.shape)
+        print('traj_est:', traj_est.shape)
+        print('t:', droid.video.counter.value)
+        # import ipdb; ipdb.set_trace()
+    else:
+        print("Debug")
+        print('poses:', droid.video.poses.shape)
+        print('t:', droid.video.counter.value)
+        
+    
     t = droid.video.counter.value
     tstamps = droid.video.tstamp[:t].cpu().numpy()
     images = droid.video.images[:t].cpu().numpy()
     disps = droid.video.disps_up[:t].cpu().numpy()
     poses = droid.video.poses[:t].cpu().numpy()
     intrinsics = droid.video.intrinsics[:t].cpu().numpy()
+    
+    Ps = lietorch.SE3(torch.from_numpy(poses)).matrix().cpu().numpy()
 
-    Path("reconstructions/{}".format(reconstruction_path)).mkdir(parents=True, exist_ok=True)
-    np.save("reconstructions/{}/tstamps.npy".format(reconstruction_path), tstamps)
-    np.save("reconstructions/{}/images.npy".format(reconstruction_path), images)
-    np.save("reconstructions/{}/disps.npy".format(reconstruction_path), disps)
-    np.save("reconstructions/{}/poses.npy".format(reconstruction_path), poses)
-    np.save("reconstructions/{}/intrinsics.npy".format(reconstruction_path), intrinsics)
+    os.makedirs(reconstruction_path, exist_ok=True)
+    print(f"Saving reconstruction to {reconstruction_path}")
+    
+    np.save(f"{reconstruction_path}/tstamps.npy", tstamps)
+    np.save(f"{reconstruction_path}/images.npy", images)
+    np.save(f"{reconstruction_path}/disps.npy", disps)
+    np.save(f"{reconstruction_path}/poses.npy", poses)
+    np.save(f"{reconstruction_path}/intrinsics.npy", intrinsics)
 
+    print("Reconstruction saved")
+    files = os.listdir(reconstruction_path)
+    print([f"{reconstruction_path}/{f}" for f in files])
+    
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -84,7 +109,7 @@ if __name__ == '__main__':
     parser.add_argument("--t0", default=0, type=int, help="starting frame")
     parser.add_argument("--stride", default=3, type=int, help="frame stride")
 
-    parser.add_argument("--weights", default="droid.pth")
+    parser.add_argument("--weights", default="ckpt/droid.pth")
     parser.add_argument("--buffer", type=int, default=512)
     parser.add_argument("--image_size", default=[240, 320])
     parser.add_argument("--disable_vis", action="store_true")
@@ -102,7 +127,7 @@ if __name__ == '__main__':
     parser.add_argument("--backend_radius", type=int, default=2)
     parser.add_argument("--backend_nms", type=int, default=3)
     parser.add_argument("--upsample", action="store_true")
-    parser.add_argument("--reconstruction_path", help="path to saved reconstruction")
+    parser.add_argument("--reconstruction_path", help="path to saved reconstruction", default='./outputs')
     args = parser.parse_args()
 
     args.stereo = False
@@ -110,6 +135,8 @@ if __name__ == '__main__':
 
     droid = None
 
+    os.makedirs(args.reconstruction_path, exist_ok=True)
+    
     # need high resolution depths
     if args.reconstruction_path is not None:
         args.upsample = True
@@ -119,8 +146,8 @@ if __name__ == '__main__':
         if t < args.t0:
             continue
 
-        if not args.disable_vis:
-            show_image(image[0])
+        # if not args.disable_vis:
+        #     show_image(image[0])
 
         if droid is None:
             args.image_size = [image.shape[2], image.shape[3]]
@@ -128,7 +155,36 @@ if __name__ == '__main__':
         
         droid.track(t, image, intrinsics=intrinsics)
 
+    # before bundle adjustment
+    
     if args.reconstruction_path is not None:
-        save_reconstruction(droid, args.reconstruction_path)
+        out_dir = args.reconstruction_path + '/before_ba'
+        os.makedirs(out_dir, exist_ok=True)
+        
+        save_pcl(droid.video, out_dir, filter_thresh=0.005, filter_dirty=True)
+        save_pcl(droid.video, out_dir, filter_thresh=0.005, filter_dirty=False)
+        
+        save_pcl(droid.video, out_dir, filter_thresh=0.01, filter_dirty=True)
+        save_pcl(droid.video, out_dir, filter_thresh=0.01, filter_dirty=False)
+        
+        save_pcl(droid.video, out_dir, filter_thresh=0.0025, filter_dirty=True)
+        save_pcl(droid.video, out_dir, filter_thresh=0.0025, filter_dirty=False)
+        
+        save_reconstruction(droid, out_dir)
 
     traj_est = droid.terminate(image_stream(args.imagedir, args.calib, args.stride))
+    
+    if args.reconstruction_path is not None:
+        out_dir = args.reconstruction_path + '/after_ba'
+        os.makedirs(out_dir, exist_ok=True)
+        
+        save_pcl(droid.video, out_dir, filter_thresh=0.005, filter_dirty=False)
+        save_pcl(droid.video, out_dir, filter_thresh=0.005, filter_dirty=True)
+        
+        save_pcl(droid.video, out_dir, filter_thresh=0.01, filter_dirty=False)
+        save_pcl(droid.video, out_dir, filter_thresh=0.01, filter_dirty=True)
+        
+        save_pcl(droid.video, out_dir, filter_thresh=0.0025, filter_dirty=False)
+        save_pcl(droid.video, out_dir, filter_thresh=0.0025, filter_dirty=True)
+        
+        save_reconstruction(droid, out_dir, traj_est)
