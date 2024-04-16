@@ -21,6 +21,7 @@ class DepthVideo:
         ### state attributes ###
         self.tstamp = torch.zeros(buffer, device="cuda", dtype=torch.float).share_memory_()
         self.images = torch.zeros(buffer, 3, ht, wd, device="cuda", dtype=torch.uint8)
+        self.masks = torch.ones(buffer, ht//8, wd//8, device="cuda", dtype=torch.float).share_memory_()
         self.dirty = torch.zeros(buffer, device="cuda", dtype=torch.bool).share_memory_()
         self.red = torch.zeros(buffer, device="cuda", dtype=torch.bool).share_memory_()
         self.poses = torch.zeros(buffer, 7, device="cuda", dtype=torch.float).share_memory_()
@@ -75,6 +76,9 @@ class DepthVideo:
 
         if len(item) > 8:
             self.inps[index] = item[8]
+            
+        if len(item) > 9:
+            self.masks[index] = item[9]
 
     def __setitem__(self, index, item):
         with self.get_lock():
@@ -94,7 +98,9 @@ class DepthVideo:
                 self.intrinsics[index],
                 self.fmaps[index],
                 self.nets[index],
-                self.inps[index])
+                self.inps[index],
+                self.masks[index],
+            )
 
         return item
 
@@ -186,6 +192,11 @@ class DepthVideo:
             # [t0, t1] window of bundle adjustment optimization
             if t1 is None:
                 t1 = max(ii.max().item(), jj.max().item()) + 1
+
+            with torch.no_grad():
+                weight_mask = self.masks[ii] * self.masks[jj]
+                weight_mask.unsqueeze_(1)
+                weight = weight * weight_mask
 
             droid_backends.ba(self.poses, self.disps, self.intrinsics[0], self.disps_sens,
                 target, weight, eta, ii, jj, t0, t1, itrs, lm, ep, motion_only)

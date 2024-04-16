@@ -118,3 +118,9 @@ def save_pcl(video, save_path, device="cuda:0", filter_thresh=0.005, filter_dirt
 
     o3d.io.write_line_set(f"{save_path}/camera.ply", pcd_camera, write_ascii=False)
     
+    pp = np.asarray(pcd_points.points)
+    pc = np.asarray(pcd_points.colors)
+    p = np.concatenate((pp, pc), axis=1)
+    
+    np.save(f"{save_path}/points_ft={filter_thresh}_fdirty={filter_dirty}.npy", p)
+    

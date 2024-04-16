@@ -12,11 +12,37 @@ import glob
 import time
 import argparse
 
+from PIL import Image
+
 from torch.multiprocessing import Process
 from droid import Droid
 from droid_slam.pcl import save_pcl
 
 import torch.nn.functional as F
+
+
+
+def colorize(
+    value: np.ndarray, vmin: float = None, vmax: float = None, cmap: str = "magma_r"
+):
+    import matplotlib
+    # if already RGB, do nothing
+    if value.ndim > 2:
+        if value.shape[-1] > 1:
+            return value
+        value = value[..., 0]
+    invalid_mask = value < 0.0001
+    # normalize
+    vmin = value.min() if vmin is None else vmin
+    vmax = value.max() if vmax is None else vmax
+    value = (value - vmin) / (vmax - vmin)  # vmin..vmax
+
+    # set color
+    cmapper = matplotlib.cm.get_cmap(cmap)
+    value = cmapper(value, bytes=True)  # (nxmx4)
+    value[invalid_mask] = 0
+    img = value[..., :3]
+    return img
 
 
 def show_image(image):
@@ -25,7 +51,7 @@ def show_image(image):
     cv2.waitKey(1)
 
 
-def image_stream(imagedir, calib, stride):
+def image_stream(imagedir, calib, stride, maskdir=None):
     """ image generator """
 
     calib = np.loadtxt(calib, delimiter=" ")
@@ -38,6 +64,7 @@ def image_stream(imagedir, calib, stride):
     K[1,2] = cy
 
     image_list = sorted(os.listdir(imagedir))[::stride]
+    mask_list = sorted(os.listdir(maskdir))[::stride] if maskdir is not None else None
 
     for t, imfile in enumerate(image_list):
         image = cv2.imread(os.path.join(imagedir, imfile))
@@ -56,7 +83,21 @@ def image_stream(imagedir, calib, stride):
         intrinsics[0::2] *= (w1 / w0)
         intrinsics[1::2] *= (h1 / h0)
 
-        yield t, image[None], intrinsics
+        if mask_list is not None:
+            mask = cv2.imread(os.path.join(maskdir, mask_list[t]), cv2.IMREAD_GRAYSCALE)
+            mask = cv2.resize(mask, (w1, h1))
+            mask = mask[:h1-h1%8, :w1-w1%8]
+            mask = 1 - (torch.from_numpy(mask) / 255)
+            mask.unsqueeze_(0)
+        else:
+            mask = torch.ones(1, h1, w1)
+        
+        masked_image = image * mask
+        
+        # resize the mask to 1/8th of the original size
+        mask = F.interpolate(mask[None], (h1//8, w1//8), mode='nearest')
+        
+        yield t, masked_image[None], intrinsics, mask
 
 
 def save_reconstruction(droid, reconstruction_path, traj_est=None):
@@ -65,7 +106,6 @@ def save_reconstruction(droid, reconstruction_path, traj_est=None):
     import random
     import string
 
-    
     # pcl, clr = get_pcl(droid.video)
     if traj_est is not None:
         print("Debug")
@@ -86,7 +126,7 @@ def save_reconstruction(droid, reconstruction_path, traj_est=None):
     poses = droid.video.poses[:t].cpu().numpy()
     intrinsics = droid.video.intrinsics[:t].cpu().numpy()
     
-    Ps = lietorch.SE3(torch.from_numpy(poses)).matrix().cpu().numpy()
+    
 
     os.makedirs(reconstruction_path, exist_ok=True)
     print(f"Saving reconstruction to {reconstruction_path}")
@@ -96,6 +136,21 @@ def save_reconstruction(droid, reconstruction_path, traj_est=None):
     np.save(f"{reconstruction_path}/disps.npy", disps)
     np.save(f"{reconstruction_path}/poses.npy", poses)
     np.save(f"{reconstruction_path}/intrinsics.npy", intrinsics)
+    
+    print(f"Number of keyframes: {tstamps.shape}")
+    print(f"Poses shape: {poses.shape}")
+    
+    if traj_est is not None:
+        Ps = lietorch.SE3(torch.from_numpy(traj_est)).matrix().cpu().numpy()
+        np.save(f"{reconstruction_path}/poses_full.npy", Ps)
+        print(f"Poses_full shape: {Ps.shape}")
+    
+    # save disparity maps as EXR format
+    depths = 1.0 / disps
+    os.makedirs(f"{reconstruction_path}/depthmaps", exist_ok=True)
+    for depth, tstamp in zip(depths, tstamps):
+        cdepth = colorize(depth, vmin=0.01, vmax=10.0)
+        Image.fromarray(cdepth).save(f"{reconstruction_path}/depthmaps/{int(tstamp):06d}.png")
 
     print("Reconstruction saved")
     files = os.listdir(reconstruction_path)
@@ -105,6 +160,7 @@ def save_reconstruction(droid, reconstruction_path, traj_est=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--imagedir", type=str, help="path to image directory")
+    parser.add_argument("--maskdir", type=str, help="path to mask directory", default=None)
     parser.add_argument("--calib", type=str, help="path to calibration file")
     parser.add_argument("--t0", default=0, type=int, help="starting frame")
     parser.add_argument("--stride", default=3, type=int, help="frame stride")
@@ -142,7 +198,7 @@ if __name__ == '__main__':
         args.upsample = True
 
     tstamps = []
-    for (t, image, intrinsics) in tqdm(image_stream(args.imagedir, args.calib, args.stride)):
+    for (t, image, intrinsics, mask) in tqdm(image_stream(args.imagedir, args.calib, args.stride, args.maskdir)):
         if t < args.t0:
             continue
 
@@ -153,7 +209,7 @@ if __name__ == '__main__':
             args.image_size = [image.shape[2], image.shape[3]]
             droid = Droid(args)
         
-        droid.track(t, image, intrinsics=intrinsics)
+        droid.track(t, image, intrinsics=intrinsics, mask=mask)
 
     # before bundle adjustment
     

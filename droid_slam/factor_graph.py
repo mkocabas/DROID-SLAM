@@ -239,6 +239,7 @@ class FactorGraph:
             weight = weight.view(-1, ht, wd, 2).permute(0,3,1,2).contiguous()
 
             # dense bundle adjustment
+            # TODO: add mask here
             self.video.ba(target, weight, damping, ii, jj, t0, t1, 
                 itrs=itrs, lm=1e-4, ep=0.1, motion_only=motion_only)
         
