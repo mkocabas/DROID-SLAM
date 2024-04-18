@@ -1,25 +1,34 @@
-import copy
-import sys
-sys.path.append('droid_slam')
 
-from tqdm import tqdm
-import numpy as np
-import torch
-import lietorch
-import cv2
+
 import os
+import sys
+import cv2
 import glob 
 import time
+import torch
+import Imath
+import lietorch
 import argparse
-
+import numpy as np
+import OpenEXR as exr
+from tqdm import tqdm
 from PIL import Image
+import torch.nn.functional as F
 
+sys.path.append('droid_slam')
 from torch.multiprocessing import Process
 from droid import Droid
 from droid_slam.pcl import save_pcl
 
-import torch.nn.functional as F
 
+def read_depth_exr_file(filepath):
+    exrfile = exr.InputFile(filepath)
+    raw_bytes = exrfile.channel('R', Imath.PixelType(Imath.PixelType.FLOAT))
+    depth_vector = np.frombuffer(raw_bytes, dtype=np.float32)
+    height = exrfile.header()['displayWindow'].max.y + 1 - exrfile.header()['displayWindow'].min.y
+    width = exrfile.header()['displayWindow'].max.x + 1 - exrfile.header()['displayWindow'].min.x
+    depth_map = np.reshape(depth_vector, (height, width))
+    return depth_map
 
 
 def colorize(
@@ -51,7 +60,7 @@ def show_image(image):
     cv2.waitKey(1)
 
 
-def image_stream(imagedir, calib, stride, maskdir=None):
+def image_stream(imagedir, calib, stride, maskdir=None, depthdir=None):
     """ image generator """
 
     calib = np.loadtxt(calib, delimiter=" ")
@@ -65,6 +74,16 @@ def image_stream(imagedir, calib, stride, maskdir=None):
 
     image_list = sorted(os.listdir(imagedir))[::stride]
     mask_list = sorted(os.listdir(maskdir))[::stride] if maskdir is not None else None
+    
+    if depthdir is not None:
+        depth_list = []
+        depth_list += glob.glob(os.path.join(depthdir, "*.exr"))[::stride]
+        depth_list += glob.glob(os.path.join(depthdir, "*.npy"))[::stride]
+        depth_list = sorted(depth_list)
+        assert len(depth_list) == len(image_list), "Number of depth files does not match number of images"
+        assert len(depth_list) > 0, "No depth files found"
+    else:
+        depth_list = None
 
     for t, imfile in enumerate(image_list):
         image = cv2.imread(os.path.join(imagedir, imfile))
@@ -85,19 +104,31 @@ def image_stream(imagedir, calib, stride, maskdir=None):
 
         if mask_list is not None:
             mask = cv2.imread(os.path.join(maskdir, mask_list[t]), cv2.IMREAD_GRAYSCALE)
-            mask = cv2.resize(mask, (w1, h1))
+            mask = cv2.resize(mask, (w1, h1), interpolation=cv2.INTER_CUBIC)
             mask = mask[:h1-h1%8, :w1-w1%8]
             mask = 1 - (torch.from_numpy(mask) / 255)
             mask.unsqueeze_(0)
         else:
             mask = torch.ones(1, h1, w1)
-        
+            
+        if depth_list is not None:
+            if depth_list[t].endswith('.exr'):
+                depth = read_depth_exr_file(depth_list[t])
+                depth = cv2.resize(depth, (w1, h1), interpolation=cv2.INTER_CUBIC)
+                depth = torch.from_numpy(depth).float()
+            elif depth_list[t].endswith('.npy'):
+                depth = np.load(depth_list[t])
+                depth = cv2.resize(depth, (w1, h1), interpolation=cv2.INTER_CUBIC)
+                depth = torch.from_numpy(depth).float()
+        else:
+            depth = None
+        # TODO: mask the mask based on the depth map
         masked_image = image * mask
         
         # resize the mask to 1/8th of the original size
         mask = F.interpolate(mask[None], (h1//8, w1//8), mode='nearest')
         
-        yield t, masked_image[None], intrinsics, mask
+        yield t, masked_image[None], intrinsics, mask, depth
 
 
 def save_reconstruction(droid, reconstruction_path, traj_est=None):
@@ -126,8 +157,6 @@ def save_reconstruction(droid, reconstruction_path, traj_est=None):
     poses = droid.video.poses[:t].cpu().numpy()
     intrinsics = droid.video.intrinsics[:t].cpu().numpy()
     
-    
-
     os.makedirs(reconstruction_path, exist_ok=True)
     print(f"Saving reconstruction to {reconstruction_path}")
     
@@ -161,6 +190,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--imagedir", type=str, help="path to image directory")
     parser.add_argument("--maskdir", type=str, help="path to mask directory", default=None)
+    parser.add_argument("--depthdir", type=str, help="path to depth directory", default=None)
     parser.add_argument("--calib", type=str, help="path to calibration file")
     parser.add_argument("--t0", default=0, type=int, help="starting frame")
     parser.add_argument("--stride", default=3, type=int, help="frame stride")
@@ -198,7 +228,8 @@ if __name__ == '__main__':
         args.upsample = True
 
     tstamps = []
-    for (t, image, intrinsics, mask) in tqdm(image_stream(args.imagedir, args.calib, args.stride, args.maskdir)):
+    stream = image_stream(args.imagedir, args.calib, args.stride, args.maskdir, args.depthdir)
+    for (t, image, intrinsics, mask, depth) in tqdm(stream):
         if t < args.t0:
             continue
 
