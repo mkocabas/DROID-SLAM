@@ -110,18 +110,22 @@ def image_stream(imagedir, calib, stride, maskdir=None, depthdir=None):
             mask.unsqueeze_(0)
         else:
             mask = torch.ones(1, h1, w1)
+            mask = mask[:, :h1-h1%8, :w1-w1%8]
             
         if depth_list is not None:
             if depth_list[t].endswith('.exr'):
                 depth = read_depth_exr_file(depth_list[t])
                 depth = cv2.resize(depth, (w1, h1), interpolation=cv2.INTER_CUBIC)
+                depth = depth[:h1-h1%8, :w1-w1%8]
                 depth = torch.from_numpy(depth).float()
             elif depth_list[t].endswith('.npy'):
                 depth = np.load(depth_list[t])
                 depth = cv2.resize(depth, (w1, h1), interpolation=cv2.INTER_CUBIC)
+                depth = depth[:h1-h1%8, :w1-w1%8]
                 depth = torch.from_numpy(depth).float()
         else:
             depth = None
+        
         # TODO: mask the mask based on the depth map
         masked_image = image * mask
         
@@ -240,7 +244,7 @@ if __name__ == '__main__':
             args.image_size = [image.shape[2], image.shape[3]]
             droid = Droid(args)
         
-        droid.track(t, image, intrinsics=intrinsics, mask=mask)
+        droid.track(t, image, depth=depth, intrinsics=intrinsics, mask=mask)
 
     # before bundle adjustment
     
@@ -259,7 +263,7 @@ if __name__ == '__main__':
         
         save_reconstruction(droid, out_dir)
 
-    traj_est = droid.terminate(image_stream(args.imagedir, args.calib, args.stride))
+    traj_est = droid.terminate(image_stream(args.imagedir, args.calib, args.stride, args.maskdir, args.depthdir))
     
     if args.reconstruction_path is not None:
         out_dir = args.reconstruction_path + '/after_ba'
