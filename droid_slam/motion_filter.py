@@ -55,7 +55,10 @@ class MotionFilter:
 
         # extract features
         gmap = self.__feature_encoder(inputs)
-
+        
+        if depth is None:
+            print("warning!! Depth is None")
+            
         ### always add first frame to the depth video ###
         if self.video.counter.value == 0:
             net, inp = self.__context_encoder(inputs[:,[0]])

@@ -132,6 +132,9 @@ def image_stream(imagedir, calib, stride, maskdir=None, depthdir=None):
         # resize the mask to 1/8th of the original size
         mask = F.interpolate(mask[None], (h1//8, w1//8), mode='nearest')
         
+        if depth is None:
+            print("Warning: No depth map provided")
+        
         yield t, masked_image[None], intrinsics, mask, depth
 
 
