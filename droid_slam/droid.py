@@ -21,7 +21,7 @@ class Droid:
         self.disable_vis = args.disable_vis
 
         # store images, depth, poses, intrinsics (shared between processes)
-        self.video = DepthVideo(args.image_size, args.buffer, stereo=args.stereo)
+        self.video = DepthVideo(args.image_size, args.buffer, stereo=args.stereo, filter_inp_depth=args.filter_inp_depth)
 
         # filter incoming frames so that there is enough motion
         self.filterx = MotionFilter(self.net, self.video, thresh=args.filter_thresh)
@@ -85,6 +85,10 @@ class Droid:
         print("#" * 32)
         self.backend(12)
 
+        camera_trajectory = self.traj_filler(stream)
+        return camera_trajectory.inv().data.cpu().numpy()
+    
+    def terminate_wo_ba(self, stream=None):
         camera_trajectory = self.traj_filler(stream)
         return camera_trajectory.inv().data.cpu().numpy()
 

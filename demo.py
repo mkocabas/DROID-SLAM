@@ -220,6 +220,7 @@ if __name__ == '__main__':
     parser.add_argument("--backend_radius", type=int, default=2)
     parser.add_argument("--backend_nms", type=int, default=3)
     parser.add_argument("--upsample", action="store_true")
+    parser.add_argument("--filter_inp_depth", action="store_true")
     parser.add_argument("--reconstruction_path", help="path to saved reconstruction", default='./outputs')
     args = parser.parse_args()
 
@@ -250,7 +251,7 @@ if __name__ == '__main__':
         droid.track(t, image, depth=depth, intrinsics=intrinsics, mask=mask)
 
     # before bundle adjustment
-    
+    before_ba_traj_est = droid.terminate_wo_ba(image_stream(args.imagedir, args.calib, args.stride, args.maskdir, args.depthdir))
     if args.reconstruction_path is not None:
         out_dir = args.reconstruction_path + '/before_ba'
         os.makedirs(out_dir, exist_ok=True)
@@ -264,7 +265,7 @@ if __name__ == '__main__':
         save_pcl(droid.video, out_dir, filter_thresh=0.0025, filter_dirty=True)
         save_pcl(droid.video, out_dir, filter_thresh=0.0025, filter_dirty=False)
         
-        save_reconstruction(droid, out_dir)
+        save_reconstruction(droid, out_dir, before_ba_traj_est)
 
     traj_est = droid.terminate(image_stream(args.imagedir, args.calib, args.stride, args.maskdir, args.depthdir))
     

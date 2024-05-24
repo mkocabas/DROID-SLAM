@@ -1394,6 +1394,7 @@ std::vector<torch::Tensor> ba_cuda(
     else {
       // add depth residual if there are depth sensor measurements
       const float alpha = 0.05;
+      const float sigma = 100.0;
       torch::Tensor m = (disps_sens.index({kx, "..."}) > 0).to(torch::TensorOptions().dtype(torch::kFloat32)).view({-1, ht*wd});
       torch::Tensor C = accum_cuda(Cii, ii, kx) + m * alpha + (1 - m) * eta.view({-1, ht*wd});
       torch::Tensor w = accum_cuda(wi, ii, kx) - m * alpha * (disps.index({kx, "..."}) - disps_sens.index({kx, "..."})).view({-1, ht*wd});
