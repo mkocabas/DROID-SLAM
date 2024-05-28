@@ -197,7 +197,7 @@ class FactorGraph:
 
 
     @torch.cuda.amp.autocast(enabled=True)
-    def update(self, t0=None, t1=None, itrs=2, use_inactive=False, EP=1e-7, motion_only=False):
+    def update(self, t0=None, t1=None, itrs=2, use_inactive=False, EP=1e-7, motion_only=False, iter_n=0):
         """ run update operator on factor graph """
 
         # motion features
@@ -241,7 +241,7 @@ class FactorGraph:
             # dense bundle adjustment
             # TODO: add mask here
             self.video.ba(target, weight, damping, ii, jj, t0, t1, 
-                itrs=itrs, lm=1e-4, ep=0.1, motion_only=motion_only)
+                itrs=itrs, lm=1e-4, ep=0.1, motion_only=motion_only, iter_n=iter_n)
         
             if self.upsample:
                 self.video.upsample(torch.unique(self.ii), upmask)

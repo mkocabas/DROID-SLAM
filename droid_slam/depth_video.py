@@ -212,7 +212,7 @@ class DepthVideo:
         return d
 
     def ba(self, target, weight, eta, ii, jj, t0=1, t1=None, itrs=2, lm=1e-4, ep=0.1, 
-           motion_only=False, robustify=True, debug=True):
+           motion_only=False, robustify=False, debug=True, iter_n=0):
         """ dense bundle adjustment (DBA) """
 
         with self.get_lock():
@@ -235,46 +235,55 @@ class DepthVideo:
                     # disps_sens = torch.where(self.masks.bool(), disps_sens, disps_est)
                     # filter based on far threshold
                     disps_sens[idxs] = torch.where(disps_sens[idxs] < (1/10.), disps_est[idxs], disps_sens[idxs])
-                    # disps_sens = torch.where(disps_est < (1/10.), disps_est, disps_sens)
+                    disps_sens[idxs] = torch.where(disps_est[idxs] < (1/10.), disps_est[idxs], disps_sens[idxs])
                     
                     if robustify:
-                        print(f"Disps Sens: {disps_sens[ii].min().item()}, {disps_sens[ii].max().item()}")
+                        
                         # robust loss as a quadratic equation
                         # ax^2 + bx + c = 0, 
                         # a = 1, b = -2*disps_est, c = disps_est^2 - sigma^2 * res / (res + sigma^2)
-                        b = -2.0 * disps_est[idxs]
-                        sigma = 0.1
-                        res_sq = (disps_est[idxs] - disps_sens[idxs]).pow(2)
-                        c = disps_est[idxs].pow(2) - (sigma**2 * res_sq / (res_sq + sigma**2))
-                        # d_prime_1 = (-b + torch.sqrt(b.pow(2) - 4.*c)) / (2.) 
-                        disps_sens[idxs] = (-b - torch.sqrt(b.pow(2) - 4.*c)) * 0.5
-
-                        print(f"Disps Sens: {disps_sens[ii].min().item()}, {disps_sens[ii].max().item()}")
+                        depth_est = 1.0 / disps_est[idxs]
+                        depth_sens = 1.0 / disps_sens[idxs]
+                        b = -2.0 * depth_est
+                        sigma = 100.0
+                        res_sq = (depth_est - depth_sens).pow(2)
+                        c = depth_est.pow(2) - (sigma**2 * res_sq / (res_sq + sigma**2))
+                        d_prime_1 = (-b + torch.sqrt(b.pow(2) - 4.*c)) / (2.) 
+                        d_prime_2 = (-b - torch.sqrt(b.pow(2) - 4.*c)) * 0.5
+                        new_depth_sens = d_prime_2
                         
-                        # rres_1 = (disps_est - d_prime_1).pow(2)
-                        # rres_2 = (disps_est - d_prime_2).pow(2)
-                        # rres_gt = sigma**2 * res / (res + sigma**2)
-                        # (rres_gt - rres_1).abs().mean()
-                        import ipdb; ipdb.set_trace()
+                        print(f"Depth Sens: {depth_sens.min().item()}, {depth_sens.max().item()}")
+                        print(f"Depth Est: {depth_est.min().item()}, {depth_est.max().item()}")
+                        print(f"New depth sens: {new_depth_sens.min().item()}, {new_depth_sens.max().item()}")
                         
+                        rres_1 = (depth_est - d_prime_1).pow(2)
+                        rres_2 = (depth_est - d_prime_2).pow(2)
+                        rres_gt = sigma**2 * res_sq / (res_sq + sigma**2)
+                        print(f"rres_1: {rres_1.mean().item()}, rres_2: {rres_2.mean().item()}, rres_gt: {rres_gt.mean().item()}")
+                        
+                        disps_sens[idxs] = 1.0 / new_depth_sens
+                        
+                        # Outlier detection
+                        '''
                         # Compute residuals
-                        # res = torch.abs(disps_est[idxs] - disps_sens[idxs]).reshape(idxs.shape[0], -1)
+                        res = torch.abs(disps_est[idxs] - disps_sens[idxs]).reshape(idxs.shape[0], -1)
 
-                        # # Compute z-scores
-                        # mean_residual = torch.mean(res, dim=1, keepdim=True)
-                        # std_residual = torch.std(res, dim=1, keepdim=True)
-                        # z_scores = (res - mean_residual) / std_residual
+                        # Compute z-scores
+                        mean_residual = torch.mean(res, dim=1, keepdim=True)
+                        std_residual = torch.std(res, dim=1, keepdim=True)
+                        z_scores = (res - mean_residual) / std_residual
 
-                        # # Identify outliers (e.g., z-score > 2)
-                        # outlier_threshold = 2
-                        # outliers = z_scores > outlier_threshold
-                        # outliers = outliers.reshape(*disps_est[idxs].shape)
-                        # print(f"ration of outliers: {outliers.sum().item() / outliers.numel()}")
+                        # Identify outliers (e.g., z-score > 2)
+                        outlier_threshold = 2
+                        outliers = z_scores > outlier_threshold
+                        outliers = outliers.reshape(*disps_est[idxs].shape)
+                        print(f"ration of outliers: {outliers.sum().item() / outliers.numel()}")
                         
-                        # disps_sens[idxs][outliers] = disps_est[idxs][outliers]
+                        disps_sens[idxs][outliers] = disps_est[idxs][outliers]
+                        '''
                         
                     # import ipdb; ipdb.set_trace()
-                    
+                    print(f"counter: ", self.counter.value)
                     if debug:
                         for idx in torch.cat([ii, jj]).unique().cpu().numpy().tolist():
                             inp_depth = 1./disps_sens[idx].cpu().numpy()
