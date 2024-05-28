@@ -54,7 +54,9 @@ std::vector<torch::Tensor> ba_cuda(
     const int iterations,
     const float lm,
     const float ep,
-    const bool motion_only);
+    const bool motion_only,
+    const int disps_residual_kernel,
+    const float sigma);
 
 std::vector<torch::Tensor> corr_index_cuda_forward(
   torch::Tensor volume,
@@ -100,7 +102,9 @@ std::vector<torch::Tensor> ba(
     const int iterations,
     const float lm,
     const float ep,
-    const bool motion_only) {
+    const bool motion_only,
+    const int disps_residual_kernel,
+    const float sigma) {
 
   CHECK_INPUT(targets);
   CHECK_INPUT(weights);
@@ -112,7 +116,7 @@ std::vector<torch::Tensor> ba(
   CHECK_INPUT(jj);
 
   return ba_cuda(poses, disps, intrinsics, disps_sens, targets, weights,
-                 eta, ii, jj, t0, t1, iterations, lm, ep, motion_only);
+                 eta, ii, jj, t0, t1, iterations, lm, ep, motion_only, disps_residual_kernel, sigma);
 
 }
 

@@ -30,7 +30,6 @@ def pose_retr(poses, dx, ii):
 
 def BA(target, weight, eta, poses, disps, intrinsics, ii, jj, fixedp=1, rig=1):
     """ Full Bundle Adjustment """
-
     B, P, ht, wd = disps.shape
     N = ii.shape[0]
     D = poses.manifold_dim
@@ -39,8 +38,8 @@ def BA(target, weight, eta, poses, disps, intrinsics, ii, jj, fixedp=1, rig=1):
     coords, valid, (Ji, Jj, Jz) = pops.projective_transform(
         poses, disps, intrinsics, ii, jj, jacobian=True)
 
-    r = (target - coords).view(B, N, -1, 1)
-    w = .001 * (valid * weight).view(B, N, -1, 1)
+    r = (target - coords).reshape(B, N, -1, 1)
+    w = 0.001 * (valid * weight).reshape(B, N, -1, 1)
 
     ### 2: construct linear system ###
     Ji = Ji.reshape(B, N, -1, D)
@@ -92,6 +91,115 @@ def BA(target, weight, eta, poses, disps, intrinsics, ii, jj, fixedp=1, rig=1):
 
     H = H.view(B, P, P, D, D)
     E = E.view(B, P, M, D, ht*wd)
+
+    ### 3: solve the system ###
+    dx, dz = schur_solve(H, E, C, v, w)
+    
+    ### 4: apply retraction ###
+    poses = pose_retr(poses, dx, torch.arange(P) + fixedp)
+    disps = disp_retr(disps, dz.view(B,-1,ht,wd), kx)
+
+    disps = torch.where(disps > 10, torch.zeros_like(disps), disps)
+    disps = disps.clamp(min=0.0)
+
+    return poses, disps
+
+
+def huber_kernel(residual, delta=1.0):
+    abs_residual = torch.abs(residual)
+    mask = abs_residual < delta
+    out = torch.where(mask, 0.5 * residual ** 2, delta * (abs_residual - 0.5 * delta))
+    return out
+
+
+def geman_mcclure_kernel(residual, sigma=1.0):
+    squared_residual = residual ** 2
+    kernel = squared_residual / (sigma ** 2 + squared_residual)
+    return kernel
+
+
+def BA_depth(target, weight, eta, poses, disps, intrinsics, ii, jj, disps_sens=None, fixedp=1, rig=1, 
+             disp_residual_kernel='none'):
+    """ Full Bundle Adjustment """
+    B, P, ht, wd = disps.shape
+    N = ii.shape[0]
+    D = poses.manifold_dim
+
+    ### 1: commpute jacobians and residuals ###
+    coords, valid, (Ji, Jj, Jz) = pops.projective_transform(
+        poses, disps, intrinsics, ii, jj, jacobian=True)
+
+    r = (target - coords).reshape(B, N, -1, 1)
+    w = 0.001 * (valid * weight).reshape(B, N, -1, 1)
+
+    ### 2: construct linear system ###
+    Ji = Ji.reshape(B, N, -1, D)
+    Jj = Jj.reshape(B, N, -1, D)
+    wJiT = (w * Ji).transpose(2,3)
+    wJjT = (w * Jj).transpose(2,3)
+
+    Jz = Jz.reshape(B, N, ht*wd, -1)
+
+    Hii = torch.matmul(wJiT, Ji)
+    Hij = torch.matmul(wJiT, Jj)
+    Hji = torch.matmul(wJjT, Ji)
+    Hjj = torch.matmul(wJjT, Jj)
+
+    vi = torch.matmul(wJiT, r).squeeze(-1)
+    vj = torch.matmul(wJjT, r).squeeze(-1)
+
+    Ei = (wJiT.view(B,N,D,ht*wd,-1) * Jz[:,:,None]).sum(dim=-1)
+    Ej = (wJjT.view(B,N,D,ht*wd,-1) * Jz[:,:,None]).sum(dim=-1)
+
+    w = w.view(B, N, ht*wd, -1)
+    r = r.view(B, N, ht*wd, -1)
+    wk = torch.sum(w*r*Jz, dim=-1)
+    Ck = torch.sum(w*Jz*Jz, dim=-1)
+
+    kx, kk = torch.unique(ii, return_inverse=True)
+    M = kx.shape[0]
+
+    # only optimize keyframe poses
+    P = P // rig - fixedp
+    ii = ii // rig - fixedp
+    jj = jj // rig - fixedp
+
+    H = safe_scatter_add_mat(Hii, ii, ii, P, P) + \
+        safe_scatter_add_mat(Hij, ii, jj, P, P) + \
+        safe_scatter_add_mat(Hji, jj, ii, P, P) + \
+        safe_scatter_add_mat(Hjj, jj, jj, P, P)
+
+    E = safe_scatter_add_mat(Ei, ii, kk, P, M) + \
+        safe_scatter_add_mat(Ej, jj, kk, P, M)
+
+    v = safe_scatter_add_vec(vi, ii, P) + \
+        safe_scatter_add_vec(vj, jj, P)
+
+    C = safe_scatter_add_vec(Ck, kk, M)
+    w = safe_scatter_add_vec(wk, kk, M)
+
+    C = C + eta.view(*C.shape) + 1e-7
+
+    H = H.view(B, P, P, D, D)
+    E = E.view(B, P, M, D, ht*wd)
+    
+    if disps_sens is not None:
+        # Integrate disparity sensor measurements
+        alpha = 0.05
+        # sigma = 100.0
+        # geman_mcclure_residual = (sigma * residual) / (sigma + residual.abs())
+        residual = (disps[:, kx].view(B, M, -1) - disps_sens[:, kx].view(B, M, -1))
+        if disp_residual_kernel == 'none':
+            kernel_residual = residual
+        elif disp_residual_kernel == 'huber':
+            kernel_residual = huber_kernel(residual, delta=0.1)  # Adjust delta as needed
+        elif disp_residual_kernel == 'geman_mcclure':
+            kernel_residual = geman_mcclure_kernel(residual, sigma=0.1)
+        else:
+            raise ValueError(f"Unknown residual kernel: {disp_residual_kernel}")
+        m = (disps_sens[:, kx].view(B, M, -1) > 0).to(torch.float32)
+        C = C + alpha * m + (1 - m) * eta.view(*C.shape)
+        w = w - alpha * m * kernel_residual.reshape(B, M, ht * wd)
 
     ### 3: solve the system ###
     dx, dz = schur_solve(H, E, C, v, w)

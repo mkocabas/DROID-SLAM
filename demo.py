@@ -62,7 +62,7 @@ def show_image(image):
 
 def image_stream(imagedir, calib, stride, maskdir=None, depthdir=None):
     """ image generator """
-
+    # max_img = 512
     calib = np.loadtxt(calib, delimiter=" ")
     fx, fy, cx, cy = calib[:4]
 
@@ -221,6 +221,7 @@ if __name__ == '__main__':
     parser.add_argument("--backend_nms", type=int, default=3)
     parser.add_argument("--upsample", action="store_true")
     parser.add_argument("--filter_inp_depth", action="store_true")
+    parser.add_argument("--disp_residual_kernel", type=str, default="none", choices=["none", "huber", "geman_mcclure"])
     parser.add_argument("--reconstruction_path", help="path to saved reconstruction", default='./outputs')
     args = parser.parse_args()
 

@@ -9,6 +9,8 @@ from collections import OrderedDict
 
 from droid_net import cvx_upsample
 import geom.projective_ops as pops
+from geom.ba import BA, BA_depth
+from lietorch import SO3, SE3, Sim3
 
 import matplotlib
 
@@ -35,9 +37,11 @@ def colorize(
 
 
 class DepthVideo:
-    def __init__(self, image_size=[480, 640], buffer=1024, stereo=False, filter_inp_depth=False, device="cuda:0"):
+    def __init__(self, image_size=[480, 640], buffer=1024, stereo=False, 
+                 filter_inp_depth=False, disp_residual_kernel='none', device="cuda:0"):
         
         self.filter_inp_depth = filter_inp_depth
+        self.disp_residual_kernel = disp_residual_kernel
         
         # current keyframe count
         self.counter = Value('i', 0)
@@ -211,7 +215,8 @@ class DepthVideo:
 
         return d
 
-    def ba(self, target, weight, eta, ii, jj, t0=1, t1=None, itrs=2, lm=1e-4, ep=0.1, motion_only=False, debug=False):
+    def ba(self, target, weight, eta, ii, jj, t0=1, t1=None, itrs=2, lm=1e-4, ep=0.1, motion_only=False, 
+           debug=False, use_ba_cuda=False):
         """ dense bundle adjustment (DBA) """
 
         with self.get_lock():
@@ -252,8 +257,28 @@ class DepthVideo:
                     print(f"Filtered %{(total_filtered/total)*100:.2f} points")
             else:
                 disps_sens = self.disps_sens
-
-            droid_backends.ba(self.poses, self.disps, self.intrinsics[0], disps_sens,
-                target, weight, eta, ii, jj, t0, t1, itrs, lm, ep, motion_only)
-
+            
+            if use_ba_cuda:
+                droid_backends.ba(self.poses, self.disps, self.intrinsics[0], disps_sens, 
+                                  target, weight, eta, ii, jj, t0, t1, itrs, lm, ep, motion_only,
+                                  1, 0.1)
+            else:
+                # PYTHON version
+                poses, disps = BA_depth(
+                    target=target[None].permute(0, 1, 3, 4, 2),
+                    weight=weight[None].permute(0, 1, 3, 4, 2),
+                    eta=eta,
+                    poses=SE3(self.poses[None]),
+                    disps=self.disps[None],
+                    intrinsics=self.intrinsics[None],
+                    ii=ii,
+                    jj=jj,
+                    disps_sens=disps_sens[None],
+                    fixedp=2,
+                    disp_residual_kernel=self.disp_residual_kernel,
+                )
+                
+                self.poses = poses.data[0]
+                self.disps = disps[0]
+            
             self.disps.clamp_(min=0.001)
