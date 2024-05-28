@@ -88,7 +88,6 @@ class DroidFrontend:
         for itr in range(8):
             self.graph.update(1, use_inactive=True)
 
-
         # self.video.normalize()
         self.video.poses[self.t1] = self.video.poses[self.t1-1].clone()
         self.video.disps[self.t1] = self.video.disps[self.t1-4:self.t1].mean()
