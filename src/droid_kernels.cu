@@ -1394,18 +1394,10 @@ std::vector<torch::Tensor> ba_cuda(
     else {
       // add depth residual if there are depth sensor measurements
       const float alpha = 0.05;
-      const float sigma_sq = 100.0 * 100.0;
-      // x_squared =  x ** 2
-      // sigma_squared = sigma ** 2
-      // return (sigma_squared * x_squared) / (sigma_squared + x_squared)
       torch::Tensor m = (disps_sens.index({kx, "..."}) > 0).to(torch::TensorOptions().dtype(torch::kFloat32)).view({-1, ht*wd});
       torch::Tensor residual = (disps.index({kx, "..."}) - disps_sens.index({kx, "..."})).view({-1, ht*wd});
-      torch::Tensor geman_mcclure_residual = (sigma_sq * residual.square()) / (sigma_sq + residual.square());
       torch::Tensor C = accum_cuda(Cii, ii, kx) + m * alpha + (1 - m) * eta.view({-1, ht*wd});
-      torch::Tensor w = accum_cuda(wi, ii, kx) - m * alpha * geman_mcclure_residual;
-      // std::cout << "residual: " << residual << std::endl;
-      // std::cout << "geman_mcclure_residual: " << geman_mcclure_residual << std::endl;
-      // torch::Tensor w = accum_cuda(wi, ii, kx) - m * alpha * (disps.index({kx, "..."}) - disps_sens.index({kx, "..."})).view({-1, ht*wd});
+      torch::Tensor w = accum_cuda(wi, ii, kx) - m * alpha * residual;
       torch::Tensor Q = 1.0 / C;
 
       torch::Tensor Ei = accum_cuda(Eii.view({num, 6*ht*wd}), ii, ts).view({t1-t0, 6, ht*wd});
