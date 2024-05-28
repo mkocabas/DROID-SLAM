@@ -1326,7 +1326,8 @@ std::vector<torch::Tensor> ba_cuda(
     const int iterations,
     const float lm,
     const float ep,
-    const bool motion_only)
+    const bool motion_only,
+    const float far_thres)
 {
   auto opts = poses.options();
   const int num = ii.size(0);
@@ -1395,6 +1396,10 @@ std::vector<torch::Tensor> ba_cuda(
       // add depth residual if there are depth sensor measurements
       const float alpha = 0.05;
       torch::Tensor m = (disps_sens.index({kx, "..."}) > 0).to(torch::TensorOptions().dtype(torch::kFloat32)).view({-1, ht*wd});
+      // far threshold
+      m = m * (disps_sens.index({kx, "..."}) > 1.0/far_thres).to(torch::TensorOptions().dtype(torch::kFloat32)).view({-1, ht*wd});
+      m = m * (disps.index({kx, "..."}) > 1.0/far_thres).to(torch::TensorOptions().dtype(torch::kFloat32)).view({-1, ht*wd});
+
       torch::Tensor residual = (disps.index({kx, "..."}) - disps_sens.index({kx, "..."})).view({-1, ht*wd});
       torch::Tensor C = accum_cuda(Cii, ii, kx) + m * alpha + (1 - m) * eta.view({-1, ht*wd});
       torch::Tensor w = accum_cuda(wi, ii, kx) - m * alpha * residual;

@@ -35,9 +35,9 @@ def colorize(
 
 
 class DepthVideo:
-    def __init__(self, image_size=[480, 640], buffer=1024, stereo=False, filter_inp_depth=False, device="cuda:0"):
-        
-        self.filter_inp_depth = filter_inp_depth
+    def __init__(self, image_size=[480, 640], buffer=1024, stereo=False, far_threshold=10.0, device="cuda:0"):
+
+        self.far_threshold = far_threshold
         
         # current keyframe count
         self.counter = Value('i', 0)
@@ -211,7 +211,8 @@ class DepthVideo:
 
         return d
 
-    def ba(self, target, weight, eta, ii, jj, t0=1, t1=None, itrs=2, lm=1e-4, ep=0.1, motion_only=False, debug=False):
+    def ba(self, target, weight, eta, ii, jj, t0=1, t1=None, itrs=2, lm=1e-4, ep=0.1, 
+           motion_only=False, debug=False):
         """ dense bundle adjustment (DBA) """
 
         with self.get_lock():
@@ -224,37 +225,8 @@ class DepthVideo:
                 weight_mask = self.masks[ii] * self.masks[jj]
                 weight_mask.unsqueeze_(1)
                 weight = weight * weight_mask
-        
-            if self.filter_inp_depth:
-                with torch.no_grad():
-                    disps_sens = self.disps_sens.clone()
-                    disps_est = self.disps.detach().clone()
-                    # filter based on mask
-                    disps_sens = torch.where(self.masks.bool(), disps_sens, disps_est)
-                    # filter based on far threshold
-                    disps_sens = torch.where(disps_sens < (1/10.), disps_est, disps_sens)
-                    disps_sens = torch.where(disps_est < (1/10.), disps_est, disps_sens)
-                    
-                    if debug:
-                        for idx in torch.cat([ii, jj]).unique().cpu().numpy().tolist():
-                            inp_depth = 1./disps_sens[idx].cpu().numpy()
-                            slam_depth = 1./self.disps[idx].cpu().numpy()
-                            depth_arel = np.abs(inp_depth - slam_depth) / inp_depth
-                            
-                            inp_depth_col = colorize(inp_depth, 0.1, 10.0)
-                            slam_depth_col = colorize(slam_depth, 0.1, 10.0)
-                            depth_error_col = colorize(depth_arel, vmin=0.0, vmax=0.2, cmap="coolwarm")
-                            
-                            img = np.concatenate([inp_depth_col, slam_depth_col, depth_error_col], axis=1)
-                            cv2.imwrite(f"../../results/.depth_cache/inp_depth_{idx:06d}.jpg", img[..., ::-1])
-                        
-                        total_filtered = (1 - self.masks[ii]).bool().sum() + (disps_sens[ii] < (1/10.)).sum()
-                        total = self.masks[ii].numel()
-                        print(f"Filtered %{(total_filtered/total)*100:.2f} points")
-            else:
-                disps_sens = self.disps_sens
 
-            droid_backends.ba(self.poses, self.disps, self.intrinsics[0], disps_sens,
-                target, weight, eta, ii, jj, t0, t1, itrs, lm, ep, motion_only)
+            droid_backends.ba(self.poses, self.disps, self.intrinsics[0], self.disps_sens,
+                target, weight, eta, ii, jj, t0, t1, itrs, lm, ep, motion_only, self.far_threshold)
 
             self.disps.clamp_(min=0.001)

@@ -220,7 +220,7 @@ if __name__ == '__main__':
     parser.add_argument("--backend_radius", type=int, default=2)
     parser.add_argument("--backend_nms", type=int, default=3)
     parser.add_argument("--upsample", action="store_true")
-    parser.add_argument("--filter_inp_depth", action="store_true")
+    parser.add_argument("--far_threshold", type=float, default=10.0)
     parser.add_argument("--reconstruction_path", help="path to saved reconstruction", default='./outputs')
     args = parser.parse_args()
 
